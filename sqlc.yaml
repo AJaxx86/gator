@@ -1,0 +1,10 @@
+version: "2"
+sql:
+  - schema: "sql/schema"
+    queries: "sql/queries"
+    engine: "postgresql"
+    database:
+      uri: "postgres://postgres:postgres@localhost:5432/gator"
+    gen:
+      go:
+        out: "internal/database"

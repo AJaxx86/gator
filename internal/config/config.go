@@ -40,7 +40,6 @@ func (cfg Config) SetUser(name string) error {
 	if err := write(cfg); err != nil {
 		return err
 	}
-
 	return nil
 }
 
