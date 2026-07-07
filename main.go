@@ -115,7 +115,7 @@ func handlerRegister(s *state, cmd command) error {
 		return fmt.Errorf("failed to set user config: %s\nDetails: %v", err, params)
 	}
 
-	registerMessage := fmt.Sprintf("User registered: %s\nID: %s\nCreated at: %s\n", params.Name, params.ID, params.CreatedAt)
+	registerMessage := fmt.Sprintf("User registered: %s\nID: %s\nCreated at: %s\n", params.Name, params.ID, params.CreatedAt.Format(time.DateTime))
 	fmt.Println(registerMessage)
 	return nil
 }
