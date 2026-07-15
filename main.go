@@ -52,6 +52,11 @@ func main() {
 		"register": handlerRegister,
 		"reset": reset,
 		"users": handlerGetUsers,
+		"agg": handlerAgg,
+		"addfeed": handlerAddFeed,
+		"feeds": handlerListFeeds,
+		"follow": handlerFollowFeed,
+		"following": handlerListUserFeedFollows,
 	}
 	cmds := commands{list: cmdList}
 
@@ -134,6 +139,139 @@ func handlerGetUsers(s *state, cmd command) error {
 		}
 		fmt.Println("*", user.Name)
 	}
+	return nil
+}
+
+
+func handlerAgg(s *state, cmd command) error {
+	// if len(cmd.args) == 0 {
+	// 	return fmt.Errorf("no URL provided")
+	// }
+	url := "https://www.wagslane.dev/index.xml" //cmd.args[0]
+
+	feed, err := fetchFeed(context.Background(), url)
+	if err != nil {
+		return fmt.Errorf("failed to fetch feed: %w", err)
+	}
+
+	fmt.Println(feed)
+	return nil
+}
+
+
+func handlerAddFeed(s *state, cmd command) error {
+	if len(cmd.args) < 2 {
+		return fmt.Errorf("Not enough arguments. Enter a name and URL.")
+	}
+
+	userData, err := s.db.GetUser(context.Background(), s.cfg.UserName)
+	if err != nil {
+		return fmt.Errorf("failed to get user: %w", err)
+	}
+
+	feedID := uuid.New()
+	userID := userData.ID
+	feedName := cmd.args[0]
+	feedURL := cmd.args[1]
+	createdAt := time.Now()
+	updatedAt := time.Now()
+	params := database.SaveFeedParams{
+		ID: feedID,
+		UserID: userID,
+		Name: feedName,
+		Url: feedURL,
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+	}
+
+	feedDetails, err := s.db.SaveFeed(context.Background(), params)
+	if err != nil {
+		return fmt.Errorf("failed to save feed: %w", err)
+	}
+
+	_, err = s.db.CreateFeedFollow(context.Background(), database.CreateFeedFollowParams{
+		ID: uuid.New(),
+		UserID: userID,
+		FeedID: feedID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to save feed follow: %w", err)
+	}
+
+	msg := fmt.Sprintf("Saved feed for %s: %s", s.cfg.UserName, feedDetails)
+	fmt.Print(msg)
+	return nil
+}
+
+
+func handlerListFeeds(s *state, cmd command) error {
+	feeds, err := s.db.ListFeeds(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to list feeds: %w", err)
+	}
+
+	for _, feed := range feeds {
+		fmt.Printf("%s:\n - URL: %s\n - Added by: %s\n", feed.Name, feed.Url, feed.AddedBy.String)
+	}
+
+	return nil
+}
+
+
+func handlerFollowFeed(s *state, cmd command) error {
+	if len(cmd.args) != 1 {
+		return fmt.Errorf("Invalid argument. Enter the URL you want to follow.")
+	}
+
+	followURL := cmd.args[0]
+	feed, err := s.db.GetFeed(context.Background(), followURL)
+	if err != nil {
+		return fmt.Errorf("failed to get feed: %w", err)
+	}
+
+	user, err := s.db.GetUser(context.Background(), s.cfg.UserName)
+	if err != nil {
+		return fmt.Errorf("failed to get user: %w", err)
+	}
+
+	createdAt := time.Now()
+	updatedAt := createdAt
+	params := database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: createdAt,
+		UpdatedAt: updatedAt,
+		UserID:    user.ID,
+		FeedID:    feed.ID,
+	}
+
+	follow, err := s.db.CreateFeedFollow(context.Background(), params)
+	if err != nil {
+		return fmt.Errorf("failed to follow feed: %w", err)
+	}
+
+	fmt.Printf("Created feed follow: %s\n", follow)
+	return nil
+}
+
+
+func handlerListUserFeedFollows(s *state, cmd command) error {
+	user, err := s.db.GetUser(context.Background(), s.cfg.UserName)
+	if err != nil {
+		return fmt.Errorf("failed to get user: %w", err)
+	}
+
+	follows, err := s.db.GetFeedFollowsForUser(context.Background(), user.ID)
+	if err != nil {
+		return fmt.Errorf("failed to get feed follows: %w", err)
+	}
+
+	fmt.Println(s.cfg.UserName, "is following:")
+	for _, follow := range follows {
+		fmt.Printf("%s: %s\n", follow.Name, follow.Url)
+	}
+
 	return nil
 }
 
