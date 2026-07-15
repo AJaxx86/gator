@@ -10,6 +10,7 @@ import (
 	"os"
 	"context"
 	"time"
+	"errors"
 	_ "github.com/lib/pq"
 )
 
@@ -47,18 +48,19 @@ func main() {
 	dbQueries := database.New(db)
 
 	cliState := state{cfg: &cfg, db: dbQueries}
-	cmdList := map[string]func(*state, command) error{
-		"login": handlerLogin,
-		"register": handlerRegister,
-		"reset": reset,
-		"users": handlerGetUsers,
-		"agg": handlerAgg,
-		"addfeed": handlerAddFeed,
-		"feeds": handlerListFeeds,
-		"follow": handlerFollowFeed,
-		"following": handlerListUserFeedFollows,
+	cmds := commands{
+		list: make(map[string]func(*state, command) error),
 	}
-	cmds := commands{list: cmdList}
+	cmds.register("login", handlerLogin)
+	cmds.register("register", handlerRegister)
+	cmds.register("reset", reset)
+	cmds.register("users", handlerGetUsers)
+	cmds.register("agg", handlerAgg)
+	cmds.register("addfeed", middlewareLoggedIn(handlerAddFeed))
+	cmds.register("feeds", handlerListFeeds)
+	cmds.register("follow", middlewareLoggedIn(handlerFollowFeed))
+	cmds.register("following", middlewareLoggedIn(handlerListUserFeedFollows))
+	cmds.register("unfollow", middlewareLoggedIn(handlerDeleteFeedFollow))
 
 	cmd := command{name: os.Args[1], args: os.Args[2:]}
 	cmdErr := cmds.run(&cliState, cmd)
@@ -92,6 +94,10 @@ func handlerLogin(s *state, cmd command) error {
 
 
 func handlerRegister(s *state, cmd command) error {
+	if len(cmd.args) == 0 {
+		return fmt.Errorf("Please enter a username.")
+	}
+
 	ctx := context.Background()
 	id := uuid.New()
 	created_at := time.Now()
@@ -100,8 +106,10 @@ func handlerRegister(s *state, cmd command) error {
 
 	_, err := s.db.GetUser(ctx, name)
 	if err == nil {
-		fmt.Println("User already exists:", name)
-		os.Exit(1)
+		return fmt.Errorf("User already exists: %s", name)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("failed to check user: %w", err)
 	}
 
 	params := database.CreateUserParams{
@@ -159,18 +167,13 @@ func handlerAgg(s *state, cmd command) error {
 }
 
 
-func handlerAddFeed(s *state, cmd command) error {
+func handlerAddFeed(s *state, cmd command, user database.User) error {
 	if len(cmd.args) < 2 {
 		return fmt.Errorf("Not enough arguments. Enter a name and URL.")
 	}
 
-	userData, err := s.db.GetUser(context.Background(), s.cfg.UserName)
-	if err != nil {
-		return fmt.Errorf("failed to get user: %w", err)
-	}
-
 	feedID := uuid.New()
-	userID := userData.ID
+	userID := user.ID
 	feedName := cmd.args[0]
 	feedURL := cmd.args[1]
 	createdAt := time.Now()
@@ -220,7 +223,7 @@ func handlerListFeeds(s *state, cmd command) error {
 }
 
 
-func handlerFollowFeed(s *state, cmd command) error {
+func handlerFollowFeed(s *state, cmd command, user database.User) error {
 	if len(cmd.args) != 1 {
 		return fmt.Errorf("Invalid argument. Enter the URL you want to follow.")
 	}
@@ -229,11 +232,6 @@ func handlerFollowFeed(s *state, cmd command) error {
 	feed, err := s.db.GetFeed(context.Background(), followURL)
 	if err != nil {
 		return fmt.Errorf("failed to get feed: %w", err)
-	}
-
-	user, err := s.db.GetUser(context.Background(), s.cfg.UserName)
-	if err != nil {
-		return fmt.Errorf("failed to get user: %w", err)
 	}
 
 	createdAt := time.Now()
@@ -256,7 +254,7 @@ func handlerFollowFeed(s *state, cmd command) error {
 }
 
 
-func handlerListUserFeedFollows(s *state, cmd command) error {
+func handlerListUserFeedFollows(s *state, cmd command, user database.User) error {
 	user, err := s.db.GetUser(context.Background(), s.cfg.UserName)
 	if err != nil {
 		return fmt.Errorf("failed to get user: %w", err)
@@ -272,6 +270,30 @@ func handlerListUserFeedFollows(s *state, cmd command) error {
 		fmt.Printf("%s: %s\n", follow.Name, follow.Url)
 	}
 
+	return nil
+}
+
+
+func handlerDeleteFeedFollow(s *state, cmd command, user database.User) error {
+	if len(cmd.args) != 1 {
+		return fmt.Errorf("Invalid arguments. Usage: unfollow <feed_name>")
+	}
+
+	url := cmd.args[0]
+	feed, err := s.db.GetFeed(context.Background(), url)
+	if err != nil {
+		return fmt.Errorf("failed to get feed: %w", err)
+	}
+
+	params := database.DeleteFeedFollowParams{
+		FeedID: feed.ID,
+		UserID: user.ID,
+	}
+	if err := s.db.DeleteFeedFollow(context.Background(), params); err != nil {
+		return fmt.Errorf("failed to delete feed follow: %w", err)
+	}
+
+	fmt.Printf("Unfollowed %s for user %s\n", feed.Name, user.Name)
 	return nil
 }
 
@@ -294,4 +316,20 @@ func (c *commands) run(s *state, cmd command) error {
 	}
 
 	return fmt.Errorf("unknown command: %s", cmd.name)
+}
+
+
+func (c *commands) register(name string, f func(s *state, cmd command) error) {
+	c.list[name] = f
+}
+
+
+func middlewareLoggedIn(handler func(s *state, cmd command, user database.User) error) func(*state, command) error {
+	return func(s *state, cmd command) error {
+		user, err := s.db.GetUser(context.Background(), s.cfg.UserName)
+		if err != nil {
+			return fmt.Errorf("failed to get user: %w", err)
+		}
+		return handler(s, cmd, user)
+	}
 }
