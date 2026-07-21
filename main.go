@@ -11,6 +11,7 @@ import (
 	"context"
 	"time"
 	"errors"
+	"strconv"
 	_ "github.com/lib/pq"
 )
 
@@ -61,6 +62,7 @@ func main() {
 	cmds.register("follow", middlewareLoggedIn(handlerFollowFeed))
 	cmds.register("following", middlewareLoggedIn(handlerListUserFeedFollows))
 	cmds.register("unfollow", middlewareLoggedIn(handlerDeleteFeedFollow))
+	cmds.register("browse", middlewareLoggedIn(handlerBrowsePosts))
 
 	cmd := command{name: os.Args[1], args: os.Args[2:]}
 	cmdErr := cmds.run(&cliState, cmd)
@@ -151,19 +153,53 @@ func handlerGetUsers(s *state, cmd command) error {
 }
 
 
-func handlerAgg(s *state, cmd command) error {
-	// if len(cmd.args) == 0 {
-	// 	return fmt.Errorf("no URL provided")
-	// }
-	url := "https://www.wagslane.dev/index.xml" //cmd.args[0]
-
-	feed, err := fetchFeed(context.Background(), url)
-	if err != nil {
-		return fmt.Errorf("failed to fetch feed: %w", err)
+func handlerBrowsePosts(s *state, cmd command, user database.User) error {
+	postLimit := int64(2)
+	if len(cmd.args) > 0 {
+		parsedLimit, err := strconv.ParseInt(cmd.args[0], 10, 64)
+		if err != nil {
+			fmt.Printf("Post limit invalid. Using default (2).")
+		} else {
+			postLimit = parsedLimit
+		}
 	}
 
-	fmt.Println(feed)
+	params := database.GetPostsForUserParams{
+		UserID: user.ID,
+		Limit: postLimit,
+	}
+	posts, err := s.db.GetPostsForUser(context.Background(), params)
+	if err != nil {
+		return err
+	}
+
+	for _, p := range posts {
+		msg := fmt.Sprintf("Title: %s\nDescription: %s\nURL: %s\n -----\n", p.Title, p.Description.String, p.Url)
+		fmt.Println(msg)
+	}
+
 	return nil
+}
+
+
+func handlerAgg(s *state, cmd command) error {
+	if len(cmd.args) != 1 {
+		return fmt.Errorf("Invalid usage. Include the time (i.e. 1s, 30m, 1.5h).")
+	}
+	timeBetweenReqs, err := time.ParseDuration(cmd.args[0])
+	if err != nil {
+		return err
+	}
+	fmt.Println("Fetching feeds every " + cmd.args[0])
+
+	ticker := time.NewTicker(timeBetweenReqs)
+	for ; ; <-ticker.C {
+		fmt.Println("Fetching posts...")
+		err := scrapeFeeds(s)
+		if err != nil {
+			fmt.Printf("scrapeFeeds err: %s\n", err)
+		}
+	}
 }
 
 
@@ -203,7 +239,7 @@ func handlerAddFeed(s *state, cmd command, user database.User) error {
 		return fmt.Errorf("failed to save feed follow: %w", err)
 	}
 
-	msg := fmt.Sprintf("Saved feed for %s: %s", s.cfg.UserName, feedDetails)
+	msg := fmt.Sprintf("Saved feed for %s: %v\n", s.cfg.UserName, feedDetails)
 	fmt.Print(msg)
 	return nil
 }
@@ -321,6 +357,66 @@ func (c *commands) run(s *state, cmd command) error {
 
 func (c *commands) register(name string, f func(s *state, cmd command) error) {
 	c.list[name] = f
+}
+
+
+func scrapeFeeds(s *state) error {
+	nextFeed, err := s.db.GetNextFeedToFetch(context.Background())
+	if err != nil {
+		return err
+	}
+
+	params := database.MarkFeedFetchedParams{
+		ID: nextFeed.ID,
+		LastFetchedAt: sql.NullTime{
+			Time: time.Now(),
+			Valid: true,
+		},
+		UpdatedAt: time.Now(),
+	}
+
+	feed, err := fetchFeed(context.Background(), nextFeed.Url)
+	if err != nil {
+		return err
+	}
+	err = s.db.MarkFeedFetched(context.Background(), params)
+	if err != nil {
+		return err
+	}
+
+	feedPosts := feed.Channel.Item
+	for _, post := range feedPosts {
+		publishedAt, err := time.Parse(time.RFC1123, post.PubDate)
+		if err != nil {
+			fmt.Printf("Couldn't parse time of publish: %s\n", err)
+		}
+
+		postParams := database.CreatePostParams{
+			ID: uuid.New(),
+			CreatedAt: time.Now(),
+			UpdatedAt: sql.NullTime{
+				Time: time.Now(),
+				Valid: true,
+			},
+			Title: post.Title,
+			Url: post.Link,
+			Description: sql.NullString{
+				String: post.Description,
+				Valid: true,
+			},
+			PublishedAt: sql.NullTime{
+				Time: publishedAt,
+				Valid: true,
+			},
+			FeedID: nextFeed.ID,
+		}
+		_, err = s.db.CreatePost(context.Background(), postParams)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			fmt.Printf("Error creating post: %s\n", err)
+		}
+	}
+
+	return nil
 }
 
 

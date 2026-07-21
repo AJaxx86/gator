@@ -15,7 +15,7 @@ import (
 const saveFeed = `-- name: SaveFeed :one
 INSERT INTO feeds (id, user_id, name, url, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, user_id, name, url, created_at, updated_at
+RETURNING id, user_id, name, url, created_at, updated_at, last_fetched_at
 `
 
 type SaveFeedParams struct {
@@ -44,6 +44,7 @@ func (q *Queries) SaveFeed(ctx context.Context, arg SaveFeedParams) (Feed, error
 		&i.Url,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.LastFetchedAt,
 	)
 	return i, err
 }
