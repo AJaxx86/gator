@@ -97,4 +97,4 @@ Useful commands include:
 | `gator browse [limit]` | Show posts for the current user; the default limit is 2. |
 | `gator reset` | Delete all users and their associated data. |
 
-**NOTE:** You may need to add `./` at the start of the command.
+**NOTE:** You can run the tool directly from the folder by adding `./` to the start.
